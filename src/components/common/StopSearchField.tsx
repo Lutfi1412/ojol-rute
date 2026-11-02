@@ -1,17 +1,32 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, Loader2, LocateFixed, MapPin, Search, X } from "lucide-react";
+import {
+  ExternalLink,
+  Link2,
+  Loader2,
+  LocateFixed,
+  MapPin,
+  Search,
+  X,
+} from "lucide-react";
 import { useGeolocation } from "@/hooks/useGeolocation";
 import { usePlaceSearch } from "@/hooks/usePlaceSearch";
 import type { PlaceSearchResult } from "@/types/api.types";
 import { cn } from "@/utils/cn";
 import { inputBaseClasses } from "@/components/ui/TextField";
+import { LinkLocationField } from "./LinkLocationField";
 
 interface StopSearchFieldProps {
   onSelect: (place: PlaceSearchResult) => void;
   placeholder?: string;
   autoFocus?: boolean;
   disabled?: boolean;
+}
+
+type InputMode = "search" | "link";
+
+interface SearchByNameFieldProps extends StopSearchFieldProps {
+  onModeHintChange?: () => void;
 }
 
 interface DropdownPosition {
@@ -55,17 +70,13 @@ function measureDropdown(input: HTMLInputElement): DropdownPosition {
   };
 }
 
-/**
- * Input titik ala Google Maps: ketik, pilih dari hasil pencarian, atau pakai
- * lokasi sekarang. Dropdown hasil dirender lewat portal supaya tidak pernah
- * terpotong card di bawahnya.
- */
-export function StopSearchField({
+/** Mode pencarian: ketik nama tempat, pilih hasil, atau pakai lokasi sekarang. */
+function SearchByNameField({
   onSelect,
   placeholder = "Cari alamat atau nama tempat",
   autoFocus = false,
   disabled = false,
-}: StopSearchFieldProps) {
+}: SearchByNameFieldProps) {
   const [query, setQuery] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -73,6 +84,7 @@ export function StopSearchField({
 
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const listboxId = useId();
 
   const { results, isSearching, errorMessage } = usePlaceSearch(query);
   const { isLocating, errorMessage: locationError, requestCurrentPosition } = useGeolocation();
@@ -160,7 +172,7 @@ export function StopSearchField({
       ? createPortal(
           <div
             ref={dropdownRef}
-            id="place-search-results"
+            id={listboxId}
             role="listbox"
             aria-label="Hasil pencarian lokasi"
             style={{
@@ -182,8 +194,8 @@ export function StopSearchField({
             ) : results.length === 0 ? (
               <div className="px-3 py-3">
                 <p className="text-[13px] leading-relaxed text-ink-soft">
-                  Tidak ada hasil untuk “{query.trim()}”. Coba nama tempat + kota, atau buka di
-                  Google Maps:
+                  Tidak ada hasil untuk “{query.trim()}”. Coba nama tempat + kota, atau tambahkan
+                  titiknya lewat mode <strong>Link Maps</strong>.
                 </p>
                 <a
                   href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query.trim())}`}
@@ -240,7 +252,7 @@ export function StopSearchField({
       : null;
 
   return (
-    <div className="relative">
+    <div>
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
         <input
@@ -259,7 +271,7 @@ export function StopSearchField({
           onKeyDown={handleKeyDown}
           role="combobox"
           aria-expanded={showDropdown}
-          aria-controls="place-search-results"
+          aria-controls={listboxId}
           aria-autocomplete="list"
           className={cn(inputBaseClasses, "h-11 border-line pl-9 pr-24")}
         />
@@ -301,6 +313,58 @@ export function StopSearchField({
       ) : null}
 
       {dropdown}
+    </div>
+  );
+}
+
+/**
+ * Input titik dengan dua cara: cari nama tempat (ala Google Maps) atau tempel
+ * link Google Maps. Tab disediakan supaya driver punya jalan keluar kalau
+ * alamatnya tidak ada di mesin pencarian.
+ */
+export function StopSearchField(props: StopSearchFieldProps) {
+  const [inputMode, setInputMode] = useState<InputMode>("search");
+
+  const tabs: Array<{ id: InputMode; label: string; icon: typeof Search }> = [
+    { id: "search", label: "Cari nama", icon: Search },
+    { id: "link", label: "Link Maps", icon: Link2 },
+  ];
+
+  return (
+    <div>
+      <div
+        role="tablist"
+        aria-label="Cara memasukkan titik"
+        className="mb-1.5 inline-flex items-center gap-0.5 rounded-lg bg-slate-100 p-0.5"
+      >
+        {tabs.map((tab) => {
+          const TabIcon = tab.icon;
+          const isActive = inputMode === tab.id;
+
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => setInputMode(tab.id)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11.5px] font-bold transition-colors",
+                isActive ? "bg-white text-ink shadow-sm" : "text-ink-soft hover:text-ink",
+              )}
+            >
+              <TabIcon className="size-3.5" />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {inputMode === "link" ? (
+        <LinkLocationField onSelect={props.onSelect} disabled={props.disabled} />
+      ) : (
+        <SearchByNameField {...props} />
+      )}
     </div>
   );
 }

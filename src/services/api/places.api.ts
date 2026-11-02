@@ -441,61 +441,176 @@ export async function searchPlaces(query: string): Promise<ApiSuccess<PlaceSearc
   };
 }
 
-/** Ubah koordinat jadi alamat (dipakai tombol "Saya"). */
-export async function reverseGeocode(
-  latitude: number,
-  longitude: number,
-): Promise<PlaceSearchResult> {
-  if (env.isGoogleEnabled) {
-    const url =
-      "https://maps.googleapis.com/maps/api/geocode/json" +
-      `?latlng=${latitude},${longitude}&language=id&key=${env.googleMapsApiKey}`;
+/* ------------------------------------------------------------------ */
+/* Reverse geocode: koordinat -> alamat                                */
+/* ------------------------------------------------------------------ */
 
-    const payload = await fetchJson<{
-      results?: Array<{
-        formatted_address: string;
-        address_components?: Array<{ long_name: string }>;
-      }>;
-    }>(url);
+const reverseCache = new Map<string, PlaceSearchResult>();
+const REVERSE_CACHE_LIMIT = 200;
 
-    const firstResult = payload.results?.[0];
-
-    return {
-      placeId: `${latitude},${longitude}`,
-      label: firstResult?.address_components?.[0]?.long_name ?? "Lokasi saya",
-      address: firstResult?.formatted_address ?? `${latitude}, ${longitude}`,
-      latitude,
-      longitude,
-    };
+function rememberReverseResult(cacheKey: string, place: PlaceSearchResult) {
+  if (reverseCache.size >= REVERSE_CACHE_LIMIT) {
+    const oldestKey = reverseCache.keys().next().value;
+    if (oldestKey) reverseCache.delete(oldestKey);
   }
 
-  if (env.locationIqKey) {
-    const url =
-      `https://us1.locationiq.com/v1/reverse?key=${env.locationIqKey}` +
-      `&lat=${latitude}&lon=${longitude}&format=json&accept-language=id`;
+  reverseCache.set(cacheKey, place);
+}
 
-    const payload = await fetchJson<{
-      display_name?: string;
-      address?: { road?: string; suburb?: string; city?: string };
-    }>(url);
+async function reverseWithGoogle(latitude: number, longitude: number): Promise<PlaceSearchResult> {
+  const url =
+    "https://maps.googleapis.com/maps/api/geocode/json" +
+    `?latlng=${latitude},${longitude}&language=id&key=${env.googleMapsApiKey}`;
 
-    return {
-      placeId: `${latitude},${longitude}`,
-      label: payload.address?.road ?? payload.address?.suburb ?? "Lokasi saya",
-      address: payload.display_name ?? `${latitude}, ${longitude}`,
-      latitude,
-      longitude,
-    };
-  }
+  const payload = await fetchJson<{
+    results?: Array<{
+      formatted_address: string;
+      address_components?: Array<{ long_name: string }>;
+    }>;
+  }>(url);
 
-  const url = `${env.nominatimBaseUrl}/reverse?format=jsonv2&accept-language=id&lat=${latitude}&lon=${longitude}`;
-  const payload = await fetchJson<{ display_name?: string; name?: string }>(url);
+  const firstResult = payload.results?.[0];
 
   return {
     placeId: `${latitude},${longitude}`,
-    label: payload.name?.trim() || "Lokasi saya",
+    label: firstResult?.address_components?.[0]?.long_name ?? "Titik peta",
+    address: firstResult?.formatted_address ?? `${latitude}, ${longitude}`,
+    latitude,
+    longitude,
+  };
+}
+
+async function reverseWithLocationIq(latitude: number, longitude: number): Promise<PlaceSearchResult> {
+  const url =
+    `https://us1.locationiq.com/v1/reverse?key=${env.locationIqKey}` +
+    `&lat=${latitude}&lon=${longitude}&format=json&accept-language=id`;
+
+  const payload = await fetchJson<{
+    display_name?: string;
+    address?: { road?: string; suburb?: string; neighbourhood?: string; city?: string };
+  }>(url);
+
+  return {
+    placeId: `${latitude},${longitude}`,
+    label:
+      payload.address?.road ??
+      payload.address?.neighbourhood ??
+      payload.address?.suburb ??
+      payload.address?.city ??
+      "Titik peta",
     address: payload.display_name ?? `${latitude}, ${longitude}`,
     latitude,
     longitude,
   };
+}
+
+async function reverseWithNominatim(latitude: number, longitude: number): Promise<PlaceSearchResult> {
+  const url =
+    `${env.nominatimBaseUrl}/reverse?format=jsonv2&addressdetails=1&accept-language=id` +
+    `&lat=${latitude}&lon=${longitude}`;
+
+  const payload = await fetchJson<{
+    display_name?: string;
+    name?: string;
+    address?: {
+      road?: string;
+      neighbourhood?: string;
+      suburb?: string;
+      village?: string;
+      city?: string;
+    };
+  }>(url);
+
+  const label =
+    payload.name?.trim() ||
+    payload.address?.road ||
+    payload.address?.neighbourhood ||
+    payload.address?.suburb ||
+    payload.address?.village ||
+    payload.address?.city ||
+    "Titik peta";
+
+  return {
+    placeId: `${latitude},${longitude}`,
+    label,
+    address: payload.display_name ?? `${latitude}, ${longitude}`,
+    latitude,
+    longitude,
+  };
+}
+
+async function reverseWithPhoton(latitude: number, longitude: number): Promise<PlaceSearchResult> {
+  const url = `${env.photonBaseUrl}/reverse?lat=${latitude}&lon=${longitude}&lang=en&limit=1`;
+  const payload = await fetchJson<{ features?: PhotonFeature[] }>(url);
+  const feature = payload.features?.[0];
+
+  if (!feature) throw new ApiError(404, "Alamat tidak ditemukan");
+
+  const label = buildPhotonLabel(feature.properties);
+
+  return {
+    placeId: `${latitude},${longitude}`,
+    label,
+    address: buildPhotonAddress(feature.properties, label),
+    latitude,
+    longitude,
+  };
+}
+
+/**
+ * Ubah koordinat jadi alamat. Dipakai tombol "Saya" dan input link Maps.
+ *
+ * Provider dicoba berurutan dan hasilnya di-cache, karena reverse geocoding
+ * publik (Nominatim) punya batas request dan bisa menolak kalau dipanggil
+ * berulang dalam waktu singkat.
+ */
+export async function reverseGeocode(
+  latitude: number,
+  longitude: number,
+): Promise<PlaceSearchResult> {
+  const cacheKey = `${latitude.toFixed(5)},${longitude.toFixed(5)}`;
+  const cachedResult = reverseCache.get(cacheKey);
+  if (cachedResult) return cachedResult;
+
+  const providers: Array<() => Promise<PlaceSearchResult>> = [];
+
+  if (env.isGoogleEnabled) providers.push(() => reverseWithGoogle(latitude, longitude));
+  if (env.locationIqKey) providers.push(() => reverseWithLocationIq(latitude, longitude));
+
+  providers.push(() => reverseWithNominatim(latitude, longitude));
+  providers.push(() => reverseWithPhoton(latitude, longitude));
+
+  const hasKeyedProvider = env.isGoogleEnabled || Boolean(env.locationIqKey);
+
+  if (hasKeyedProvider) {
+    // Provider berkey diutamakan dan dicoba berurutan (kualitas alamatnya lebih baik).
+    for (const provider of providers) {
+      try {
+        const place = await provider();
+        rememberReverseResult(cacheKey, place);
+        return place;
+      } catch {
+        // Gagal (rate limit / jaringan): coba berikutnya.
+      }
+    }
+  } else {
+    // Tanpa key: Nominatim dan Photon dijalankan bersamaan, ambil yang tercepat.
+    try {
+      const place = await Promise.any(providers.map((provider) => provider()));
+      rememberReverseResult(cacheKey, place);
+      return place;
+    } catch {
+      // Dua-duanya gagal: pakai fallback koordinat di bawah.
+    }
+  }
+
+  const fallbackResult: PlaceSearchResult = {
+    placeId: `${latitude},${longitude}`,
+    label: `Titik ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+    address: `${latitude}, ${longitude}`,
+    latitude,
+    longitude,
+  };
+
+  return fallbackResult;
 }

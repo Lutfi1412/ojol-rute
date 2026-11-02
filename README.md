@@ -157,7 +157,7 @@ Badge di header menunjukkan mesin jarak yang aktif: `Google Maps` atau `OSRM · 
 ```
 src/
 ├── components/
-│   ├── common/          # ProviderBadge, StopSearchField, RouteMap, RouteSummary, PlanTimeline
+│   ├── common/          # ProviderBadge, StopSearchField, LinkLocationField, RouteMap, RouteSummary, PlanTimeline
 │   ├── layout/          # AppShell (header + bottom nav), BottomNav, PageHeader
 │   ├── routes/          # RouteCard, DraftGroupCard, GroupEditor, StopRow, AddGroupPanel
 │   └── ui/              # Button, Card, Badge, Modal, ConfirmDialog, SegmentedControl, dst.
@@ -178,7 +178,8 @@ src/
 │   └── routing/         # routingClient (Google/OSRM) + routing.service (susun RoutePlan)
 ├── stores/routes.store.ts   # Zustand: state daftar rute, detail, plan, error
 ├── types/               # route.types.ts, api.types.ts
-├── utils/               # format tanggal/jarak, zod schema, polyline, geo, id, cn
+├── utils/               # format tanggal/jarak, zod schema, polyline, geo, id, cn,
+│                        # mapsLink (parser link Google Maps), plusCode (decoder kode plus)
 └── tests/               # unit test optimizer + repository
 ```
 
@@ -210,6 +211,49 @@ dan tidak ada layer auth karena aplikasi ini tidak butuh login.
 - **Hapus** tersedia per titik, per grup, dan per rute (pakai konfirmasi).
 - Tombol **Buka seluruh rute di Google Maps** mengirim urutan rekomendasi ke aplikasi Google Maps
   (maksimal 9 waypoint di URL; rute lebih panjang tetap tampil lengkap di aplikasi ini).
+
+### 5.1 Dua cara menambah titik: **Cari nama** atau **Link Maps**
+
+Setiap kolom titik punya dua tab, jadi kalau alamat tidak ketemu lewat pencarian, tidak perlu
+berhenti:
+
+**Tab "Cari nama"** — ketik nama tempat/alamat, pilih dari daftar hasil (bisa pakai panah atas/bawah
+dan Enter). Tombol **Saya** mengisi titik dengan lokasi GPS sekarang.
+
+**Tab "Link Maps"** — untuk alamat yang tidak ada di OpenStreetMap atau namanya susah ditebak:
+
+1. Tekan **Buka Google Maps**, cari titiknya di sana.
+2. Salin link/koordinat: di aplikasi Google Maps → **Bagikan → Salin link**, atau salin angka
+   koordinat dari halaman tempat.
+3. Kembali ke sini, tekan **Tempel** (baca clipboard) atau tempel manual.
+4. Kalau terbaca, muncul kotak hijau berisi koordinat + alamat hasil reverse geocode.
+   Tekan **Pakai titik ini**.
+
+| Yang bisa ditempel | Contoh |
+| --- | --- |
+| Link Google Maps lengkap | `https://www.google.com/maps/place/Monas/@-6.1753924,106.8271528,17z/data=!3d-6.1753924!4d106.8271528` |
+| Link dengan parameter `q` | `https://maps.google.com/?q=-6.9147,107.6098` |
+| Koordinat polos | `-6.175392, 106.827153` |
+| Koordinat koma desimal | `-6,175392 106,827153` |
+| Derajat-menit-detik | `6°10'31.4"S 106°49'37.6"E` |
+| Kode plus Google Maps | `849VCWC8+R9` |
+
+Catatan penting:
+
+- Dari link lengkap, yang diambil adalah koordinat **titik tempat** (`!3d..!4d..`) kalau ada;
+  kalau tidak ada, dipakai koordinat posisi peta (`@lat,lng`).
+- **Link pendek `maps.app.goo.gl` tidak bisa dibaca otomatis** — isi link itu hanya bisa diketahui
+  setelah dibuka, dan browser memblokir pembacaannya (CORS). UI akan menampilkan tombol **Buka link**
+  plus petunjuk: salin koordinat atau kode plus dari halaman tempat.
+- **Kode plus pendek** (mis. `CWC8+R9 Jakarta`) butuh titik acuan, jadi tidak didukung — pakai kode
+  plus lengkap 10 karakter.
+- Tombol **Salin** di kotak hijau menyalin koordinat (`-6.175392, 106.827153`) untuk dikirim ke
+  orang lain lewat WhatsApp atau catatan.
+- Titik hasil link disimpan sama seperti titik hasil pencarian: bisa digeser, ditandai selesai,
+  atau dihapus.
+
+Kode terkait: `src/utils/mapsLink.ts` (parser link/koordinat), `src/utils/plusCode.ts`
+(decoder kode plus), `src/components/common/LinkLocationField.tsx` (UI tab Link Maps).
 
 ---
 
