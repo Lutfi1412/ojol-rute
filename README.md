@@ -73,41 +73,82 @@ bun run typecheck    # cek tipe saja
 bun run test         # unit test (vitest, jsdom)
 ```
 
-Tanpa `.env` pun jalan: pengambilan lokasi memakai **Nominatim (OpenStreetMap)** dan perhitungan rute
-memakai **OSRM**. Kalau mau data Google, isi `VITE_GOOGLE_MAPS_API_KEY` (lihat bagian 3).
+Tanpa `.env` pun jalan: pencarian lokasi memakai **Photon + Nominatim (OpenStreetMap)**, perhitungan
+rute memakai **OSRM**, tile peta memakai CARTO. Kalau mau hasil yang lebih akurat, isi key di `.env`
+(lihat bagian 3).
 
 ---
 
 ## 3. Environment variable
 
-Semua variabel frontend harus berawalan `VITE_` (aturan Vite). Salin `.env.example` menjadi `.env`:
+Semua variabel frontend harus berawalan `VITE_` (aturan Vite). Salin `.env.example` menjadi `.env`,
+isi key yang kamu punya, lalu **hentikan dan jalankan ulang** `bun run dev` (Vite hanya membaca `.env`
+saat start).
 
 ```env
+# Pencarian lokasi & jarak (opsional, pilih salah satu atau isi semua)
 VITE_GOOGLE_MAPS_API_KEY=
+VITE_LOCATIONIQ_KEY=
+VITE_MAPTILER_KEY=
+
+# Opsional: tile peta manual (kalau tidak pakai MapTiler)
+VITE_MAP_TILE_URL=
+VITE_MAP_TILE_ATTRIBUTION=
+
+# Server gratis (boleh dibiarkan)
 VITE_OSRM_BASE_URL=https://router.project-osrm.org
+VITE_PHOTON_BASE_URL=https://photon.komoot.io
 VITE_NOMINATIM_BASE_URL=https://nominatim.openstreetmap.org
+
 VITE_APP_NAME=Rute Ojol
 ```
 
 | Variabel | Wajib | Default | Keterangan |
 | --- | --- | --- | --- |
-| `VITE_GOOGLE_MAPS_API_KEY` | tidak | kosong | Kalau diisi: pencarian lokasi pakai Places API, jarak pakai Distance Matrix, rute pakai Directions. Kalau kosong: Nominatim + OSRM. |
-| `VITE_OSRM_BASE_URL` | tidak | `https://router.project-osrm.org` | Bisa diganti server OSRM sendiri. |
-| `VITE_NOMINATIM_BASE_URL` | tidak | `https://nominatim.openstreetmap.org` | Bisa diganti instance Nominatim sendiri. |
+| `VITE_GOOGLE_MAPS_API_KEY` | tidak | kosong | Paling akurat. Dipakai untuk pencarian (Places), jarak (Distance Matrix), rute (Directions). |
+| `VITE_LOCATIONIQ_KEY` | tidak | kosong | Autocomplete alamat Indonesia, gratis 5.000 request/hari. Pencarian saja. |
+| `VITE_MAPTILER_KEY` | tidak | kosong | Satu key untuk **tile peta + pencarian**. Gratis 100.000 request/bulan. |
+| `VITE_MAP_TILE_URL` | tidak | tile MapTiler / CARTO | Override URL tile Leaflet secara manual. |
+| `VITE_MAP_TILE_ATTRIBUTION` | tidak | atribusi MapTiler / CARTO | Teks atribusi tile. |
+| `VITE_OSRM_BASE_URL` | tidak | `https://router.project-osrm.org` | Server jarak/polyline kalau tanpa Google. |
+| `VITE_PHOTON_BASE_URL` | tidak | `https://photon.komoot.io` | Pencarian OSM (tanpa key). |
+| `VITE_NOMINATIM_BASE_URL` | tidak | `https://nominatim.openstreetmap.org` | Pencarian & reverse geocode OSM (tanpa key). |
 | `VITE_APP_NAME` | tidak | `Rute Ojol` | Dipakai di `<title>` dan header. |
 
-Kalau memakai key Google, aktifkan API berikut di Google Cloud Console:
+### 3.1 Urutan mesin pencarian lokasi
+
+Aplikasi mencoba provider satu per satu, berhenti di provider pertama yang memberi hasil,
+dan otomatis turun ke provider berikutnya kalau error atau kosong:
+
+```
+Google Places  →  LocationIQ  →  MapTiler  →  Photon + Nominatim (gabungan, tanpa key)
+```
+
+Artinya: **isi key apa pun yang paling gampang kamu dapat**, sisanya tetap jalan. Tanpa key pun
+aplikasi tidak error, hanya kualitas teks pencariannya di bawah Google.
+
+### 3.2 Mau yang mana?
+
+| Kebutuhan | Pakai | Daftar di |
+| --- | --- | --- |
+| Akurasi terbaik + nama populer/singkatan ("monas", "grandindo") | Google Maps Platform | <https://console.cloud.google.com/apis/credentials> |
+| Gratis, khusus alamat Indonesia, tanpa kartu kredit | LocationIQ | <https://locationiq.com/> |
+| Satu key untuk peta **dan** pencarian, tile lebih rapi | MapTiler | <https://cloud.maptiler.com/> |
+| Tidak mau daftar apa pun | (kosongkan saja) | Photon + Nominatim + tile CARTO |
+
+Kalau memakai Google, aktifkan di **APIs & Services → Library**:
 
 - **Places API** (autocomplete + detail alamat)
 - **Distance Matrix API** (matriks jarak antar titik)
 - **Directions API** (polyline & total perjalanan)
 
-Peta tetap memakai **Leaflet + tile CARTO/OpenStreetMap**, jadi Maps JavaScript API tidak diperlukan.
+**Maps JavaScript API tidak perlu** — peta memakai Leaflet + tile raster, bukan Google Maps JS.
 
-> **Penting:** key `VITE_*` ikut terkirim ke browser. Batasi key dengan *HTTP referrer restriction*
-> (domain Vercel + `localhost`) dan jangan pakai key yang punya akses billing luas.
+> **Penting:** key `VITE_*` ikut terkirim ke browser (siapa pun bisa melihatnya di DevTools).
+> Batasi key dengan *HTTP referrer restriction* (domain Vercel + `localhost`) dan, khusus Google,
+> batasi juga ke 3 API di atas. Jangan pakai key yang punya akses billing luas.
 
-Badge di header menunjukkan mesin yang sedang dipakai: `Google Maps` atau `OSRM · OSM`.
+Badge di header menunjukkan mesin jarak yang aktif: `Google Maps` atau `OSRM · OSM`.
 
 ---
 
@@ -523,8 +564,9 @@ Respons `200`:
 }
 ```
 
-Query minimal 3 karakter. Backend: Google Places kalau `VITE_GOOGLE_MAPS_API_KEY` terisi, kalau tidak
-Nominatim. Error `502`/`504` kalau layanan tidak merespons.
+Query minimal 2 karakter, debounce 450 ms, maksimal 8 hasil. Provider dicoba berurutan:
+Google Places → LocationIQ → MapTiler → Photon + Nominatim. Error `502`/`504` hanya kalau
+semua provider gagal; hasil kosong tetap `200` dengan `data: []`.
 
 ## 8. Bentuk respons & kode error
 
@@ -605,8 +647,8 @@ Catatan:
 
 | Bagian | Tanpa key Google | Dengan key Google |
 | --- | --- | --- |
-| Pencarian lokasi | Nominatim (`/search`) | Places Autocomplete + Details |
-| Lokasi sekarang → alamat | Nominatim (`/reverse`) | Geocoding API |
+| Pencarian lokasi | Photon + Nominatim (`/search`, digabung & diurutkan) | Places Autocomplete + Details |
+| Lokasi sekarang → alamat | Nominatim / LocationIQ (`/reverse`) | Geocoding API |
 | Matriks jarak antar titik | OSRM `/table` | Distance Matrix API |
 | Garis rute + total akhir | OSRM `/route` (polyline penuh) | Directions API |
 | Tile peta | CARTO/OpenStreetMap via Leaflet | sama |
@@ -618,7 +660,7 @@ Detail teknis:
 - Kalau Directions gagal → total tetap dihitung dari matriks, peta menggambar garis lurus antar titik,
   dan `notes` memberi tahu bahwa garisnya bukan jalan asli.
 - Polyline disimpan ter-encode (precision 5) dan didekode di klien (`decodePolyline`).
-- Pencarian alamat di-debounce 450 ms dan minimal 3 karakter supaya tidak melanggar rate limit Nominatim.
+- Pencarian alamat di-debounce 450 ms dan minimal 2 karakter supaya tidak melanggar rate limit Nominatim/Photon.
 
 ---
 
@@ -680,6 +722,8 @@ Repo: `https://github.com/Lutfi1412/ojol-rute.git`
 bunx vercel link                 # hubungkan folder ke project
 bunx vercel env add VITE_APP_NAME production
 bunx vercel env add VITE_GOOGLE_MAPS_API_KEY production   # opsional
+bunx vercel env add VITE_LOCATIONIQ_KEY production        # opsional
+bunx vercel env add VITE_MAPTILER_KEY production          # opsional
 bunx vercel deploy --prod
 ```
 

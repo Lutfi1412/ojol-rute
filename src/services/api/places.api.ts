@@ -2,7 +2,8 @@ import { env } from "@/config/env";
 import type { ApiSuccess, PlaceSearchResult } from "@/types/api.types";
 import { ApiError } from "./apiError";
 
-const SEARCH_RESULT_LIMIT = 6;
+const SEARCH_RESULT_LIMIT = 8;
+const CANDIDATE_LIMIT = 20;
 const REQUEST_TIMEOUT_MS = 12_000;
 
 async function fetchJson<TResponse>(url: string): Promise<TResponse> {
@@ -28,6 +29,39 @@ async function fetchJson<TResponse>(url: string): Promise<TResponse> {
   }
 }
 
+function isCoordinate(latitude: number, longitude: number): boolean {
+  return (
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    Math.abs(latitude) <= 90 &&
+    Math.abs(longitude) <= 180
+  );
+}
+
+/** Buang hasil ganda (nama + titik hampir sama) lalu potong ke batas tampil. */
+function finalizeResults(results: PlaceSearchResult[]): PlaceSearchResult[] {
+  const seen = new Set<string>();
+  const unique: PlaceSearchResult[] = [];
+
+  for (const result of results) {
+    if (!isCoordinate(result.latitude, result.longitude)) continue;
+
+    const key = `${result.label.toLowerCase()}|${result.latitude.toFixed(3)}|${result.longitude.toFixed(3)}`;
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    unique.push(result);
+
+    if (unique.length >= SEARCH_RESULT_LIMIT) break;
+  }
+
+  return unique;
+}
+
+/* ------------------------------------------------------------------ */
+/* 1. Google Places (paling akurat untuk Indonesia, butuh API key)     */
+/* ------------------------------------------------------------------ */
+
 interface GoogleAutocompleteResponse {
   status: string;
   error_message?: string;
@@ -45,22 +79,6 @@ interface GooglePlaceDetailsResponse {
     formatted_address?: string;
     name?: string;
   };
-}
-
-interface NominatimSearchItem {
-  place_id: number;
-  display_name: string;
-  name?: string;
-  lat: string;
-  lon: string;
-}
-
-interface NominatimReverseResponse {
-  display_name?: string;
-  name?: string;
-  lat?: string;
-  lon?: string;
-  error?: string;
 }
 
 async function searchWithGoogle(query: string): Promise<PlaceSearchResult[]> {
@@ -101,35 +119,319 @@ async function searchWithGoogle(query: string): Promise<PlaceSearchResult[]> {
     }),
   );
 
-  return results.filter((item): item is PlaceSearchResult => item !== null);
+  return finalizeResults(results.filter((item): item is PlaceSearchResult => item !== null));
 }
 
-async function searchWithNominatim(query: string): Promise<PlaceSearchResult[]> {
+/* ------------------------------------------------------------------ */
+/* 2. LocationIQ autocomplete (gratis 5.000 request/hari)              */
+/* ------------------------------------------------------------------ */
+
+interface LocationIqItem {
+  place_id?: string;
+  display_name?: string;
+  display_place?: string;
+  display_address?: string;
+  lat?: string;
+  lon?: string;
+}
+
+async function searchWithLocationIq(query: string): Promise<PlaceSearchResult[]> {
   const url =
-    `${env.nominatimBaseUrl}/search?format=jsonv2&addressdetails=0&limit=${SEARCH_RESULT_LIMIT}` +
-    `&countrycodes=id&accept-language=id&q=${encodeURIComponent(query)}`;
+    `https://api.locationiq.com/v1/autocomplete?key=${env.locationIqKey}` +
+    `&q=${encodeURIComponent(query)}&countrycodes=id&limit=${CANDIDATE_LIMIT}` +
+    "&dedupe=1&addressdetails=1&normalizecity=1&format=json";
 
-  const payload = await fetchJson<NominatimSearchItem[]>(url);
+  const payload = await fetchJson<LocationIqItem[]>(url);
 
-  return payload.map((item) => ({
-    placeId: `osm-${item.place_id}`,
-    label: item.name?.trim() || item.display_name.split(",")[0]?.trim() || item.display_name,
-    address: item.display_name,
+  const results = payload.map((item) => ({
+    placeId: `locationiq-${item.place_id ?? item.display_name ?? query}`,
+    label: item.display_place?.trim() || item.display_name?.split(",")[0]?.trim() || "Lokasi",
+    address: item.display_address?.trim() || item.display_name?.trim() || "",
     latitude: Number(item.lat),
     longitude: Number(item.lon),
   }));
+
+  return finalizeResults(results);
 }
 
-/** Cari lokasi: Google Places kalau key tersedia, kalau tidak Nominatim/OSM. */
+/* ------------------------------------------------------------------ */
+/* 3. MapTiler Geocoding (satu key untuk peta + pencarian)             */
+/* ------------------------------------------------------------------ */
+
+interface MaptilerFeature {
+  text?: string;
+  place_name?: string;
+  center?: [number, number];
+  geometry?: { coordinates?: [number, number] };
+  properties?: { name?: string; address?: string };
+}
+
+async function searchWithMaptiler(query: string): Promise<PlaceSearchResult[]> {
+  const url =
+    `https://api.maptiler.com/geocoding/${encodeURIComponent(query)}.json` +
+    `?key=${env.maptilerKey}&country=id&limit=${CANDIDATE_LIMIT}&language=id`;
+
+  const payload = await fetchJson<{ features?: MaptilerFeature[] }>(url);
+
+  const results = (payload.features ?? []).map((feature) => {
+    const coordinates = feature.geometry?.coordinates ?? feature.center ?? [0, 0];
+    const label = feature.properties?.name ?? feature.text ?? feature.place_name ?? "Lokasi";
+
+    return {
+      placeId: `maptiler-${label}-${coordinates[0]}-${coordinates[1]}`,
+      label,
+      address: feature.place_name ?? feature.properties?.address ?? "",
+      latitude: coordinates[1],
+      longitude: coordinates[0],
+    };
+  });
+
+  return finalizeResults(results);
+}
+
+/* ------------------------------------------------------------------ */
+/* 4. OpenStreetMap tanpa key: Photon + Nominatim digabung & diurutkan */
+/* ------------------------------------------------------------------ */
+
+interface OsmCandidate {
+  result: PlaceSearchResult;
+  score: number;
+}
+
+/** Bounding box Indonesia, supaya hasil tidak melompat ke luar negeri. */
+const INDONESIA_BBOX = "94.9,-11.1,141.1,6.2";
+
+/** Kategori yang biasanya jadi tujuan kiriman, bukan nama desa/kecamatan. */
+const DESTINATION_OSM_KEYS = new Set([
+  "amenity",
+  "shop",
+  "tourism",
+  "leisure",
+  "highway",
+  "railway",
+  "building",
+  "office",
+  "historic",
+  "man_made",
+  "craft",
+  "healthcare",
+]);
+
+/**
+ * Nama yang persis/berawalan sama dengan kata kunci dapat nilai lebih besar.
+ * `maxScore` dipakai untuk menahan kategori yang gampang "menang" hanya karena
+ * namanya mirip, misal nama jalan.
+ */
+function scoreByName(name: string, normalizedQuery: string, maxScore = 6): number {
+  const normalizedName = name.trim().toLowerCase();
+  const score = (() => {
+    if (normalizedName === normalizedQuery) return 6;
+    if (normalizedName.startsWith(normalizedQuery)) return 4;
+    if (normalizedName.includes(normalizedQuery)) return 2;
+    return 0;
+  })();
+
+  return Math.min(score, maxScore);
+}
+
+interface PhotonFeature {
+  geometry: { coordinates: [number, number] };
+  properties: {
+    osm_id?: number;
+    osm_type?: string;
+    osm_key?: string;
+    osm_value?: string;
+    name?: string;
+    street?: string;
+    housenumber?: string;
+    city?: string;
+    county?: string;
+    district?: string;
+    state?: string;
+    countrycode?: string;
+  };
+}
+
+function buildPhotonLabel(properties: PhotonFeature["properties"]): string {
+  if (properties.name?.trim()) return properties.name.trim();
+
+  const street = [properties.street, properties.housenumber]
+    .filter((part): part is string => Boolean(part && part.trim()))
+    .join(" ");
+
+  return (
+    street ||
+    properties.district?.trim() ||
+    properties.city?.trim() ||
+    properties.county?.trim() ||
+    "Lokasi"
+  );
+}
+
+function buildPhotonAddress(properties: PhotonFeature["properties"], label: string): string {
+  const street = [properties.street, properties.housenumber]
+    .filter((part): part is string => Boolean(part && part.trim()))
+    .join(" ");
+
+  const parts = [street, properties.district, properties.city, properties.county, properties.state]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part));
+
+  const uniqueParts = parts.filter((part, index) => part !== label && parts.indexOf(part) === index);
+
+  return uniqueParts.join(", ") || label;
+}
+
+async function collectPhotonCandidates(query: string): Promise<OsmCandidate[]> {
+  const buildUrl = (withBbox: boolean) =>
+    `${env.photonBaseUrl}/api?q=${encodeURIComponent(query)}` +
+    `&limit=${CANDIDATE_LIMIT}&lang=en` +
+    (withBbox ? `&bbox=${INDONESIA_BBOX}` : "");
+
+  const payload = await fetchJson<{ features?: PhotonFeature[] }>(buildUrl(true));
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return (payload.features ?? [])
+    .filter((feature) => feature.properties.countrycode === "ID")
+    .map((feature) => {
+      const [longitude, latitude] = feature.geometry.coordinates;
+      const label = buildPhotonLabel(feature.properties);
+      const osmKey = feature.properties.osm_key ?? "";
+
+      // Nama jalan/bus stop jangan mengalahkan tempat terkenal hanya karena namanya sama.
+      let score = scoreByName(label, normalizedQuery, osmKey === "highway" ? 3 : 6);
+      if (DESTINATION_OSM_KEYS.has(osmKey)) score += 2;
+      if (osmKey === "place") score -= 3;
+      if (feature.properties.street) score += 1;
+      if (feature.properties.city) score += 1;
+
+      return {
+        score,
+        result: {
+          placeId: `photon-${feature.properties.osm_type ?? "osm"}-${feature.properties.osm_id ?? label}`,
+          label,
+          address: buildPhotonAddress(feature.properties, label),
+          latitude,
+          longitude,
+        },
+      };
+    });
+}
+
+interface NominatimSearchItem {
+  place_id: number;
+  display_name: string;
+  name?: string;
+  lat: string;
+  lon: string;
+  class?: string;
+  type?: string;
+  importance?: number;
+}
+
+async function collectNominatimCandidates(query: string): Promise<OsmCandidate[]> {
+  const url =
+    `${env.nominatimBaseUrl}/search?format=jsonv2&addressdetails=0&limit=${CANDIDATE_LIMIT}` +
+    `&countrycodes=id&accept-language=id&q=${encodeURIComponent(query)}`;
+
+  const payload = await fetchJson<NominatimSearchItem[]>(url);
+  const normalizedQuery = query.trim().toLowerCase();
+
+  return payload.map((item) => {
+    const label = item.name?.trim() || item.display_name.split(",")[0]?.trim() || "Lokasi";
+    const osmKey = item.class ?? "";
+
+    let score = scoreByName(label, normalizedQuery);
+    if (DESTINATION_OSM_KEYS.has(osmKey)) score += 2;
+    if (osmKey === "place") score -= 3;
+    if (typeof item.importance === "number") score += item.importance * 12;
+
+    return {
+      score,
+      result: {
+        placeId: `osm-${item.place_id}`,
+        label,
+        address: item.display_name,
+        latitude: Number(item.lat),
+        longitude: Number(item.lon),
+      },
+    };
+  });
+}
+
+/**
+ * Ambil kandidat dari Photon dan Nominatim sekaligus, gabungkan, lalu urutkan
+ * ulang: nama yang cocok + kategori tempat menang; nama desa/administratif
+ * turun. Dua sumber ini saling melengkapi untuk alamat Indonesia.
+ */
+async function searchWithOpenStreetMap(query: string): Promise<PlaceSearchResult[]> {
+  // "pasar baru jakarta" -> juga cari "pasar baru"; hasil yang cocok dengan
+  // seluruh kata kunci tetap diberi nilai lebih supaya tidak kalah.
+  const words = query.trim().split(/\s+/);
+  const queryVariants = words.length > 1 ? [query, words.slice(0, -1).join(" ")] : [query];
+
+  const collected = await Promise.allSettled(
+    queryVariants.flatMap((variant, variantIndex) => [
+      collectPhotonCandidates(variant).then((candidates) =>
+        candidates.map((candidate) => ({
+          ...candidate,
+          score: candidate.score + (variantIndex === 0 ? 2 : 0),
+        })),
+      ),
+      collectNominatimCandidates(variant).then((candidates) =>
+        candidates.map((candidate) => ({
+          ...candidate,
+          score: candidate.score + (variantIndex === 0 ? 2 : 0),
+        })),
+      ),
+    ]),
+  );
+
+  const candidates = collected.flatMap((outcome) =>
+    outcome.status === "fulfilled" ? outcome.value : [],
+  );
+
+  const ranked = candidates
+    .sort((first, second) => second.score - first.score)
+    .map((candidate) => candidate.result);
+
+  return finalizeResults(ranked);
+}
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * Urutan percobaan pencarian lokasi:
+ * Google → LocationIQ → MapTiler → Photon → Nominatim.
+ * Yang tidak punya key otomatis dilewati, jadi tanpa key pun tetap jalan.
+ */
 export async function searchPlaces(query: string): Promise<ApiSuccess<PlaceSearchResult[]>> {
   const trimmedQuery = query.trim();
 
-  const results =
-    trimmedQuery.length < 3
-      ? []
-      : env.isGoogleEnabled
-        ? await searchWithGoogle(trimmedQuery)
-        : await searchWithNominatim(trimmedQuery);
+  let results: PlaceSearchResult[] = [];
+
+  if (trimmedQuery.length >= 2) {
+    const providers: Array<() => Promise<PlaceSearchResult[]>> = [];
+
+    if (env.isGoogleEnabled) providers.push(() => searchWithGoogle(trimmedQuery));
+    if (env.locationIqKey) providers.push(() => searchWithLocationIq(trimmedQuery));
+    if (env.maptilerKey) providers.push(() => searchWithMaptiler(trimmedQuery));
+
+    providers.push(() => searchWithOpenStreetMap(trimmedQuery));
+
+    for (const provider of providers) {
+      try {
+        const providerResults = await provider();
+
+        if (providerResults.length > 0) {
+          results = providerResults;
+          break;
+        }
+      } catch {
+        // Provider ini gagal: lanjut ke berikutnya, jangan bikin UI error.
+      }
+    }
+  }
 
   return {
     success: true,
@@ -139,16 +441,21 @@ export async function searchPlaces(query: string): Promise<ApiSuccess<PlaceSearc
   };
 }
 
-/** Ubah koordinat jadi alamat (dipakai tombol "Lokasi saya"). */
-export async function reverseGeocode(latitude: number, longitude: number): Promise<PlaceSearchResult> {
+/** Ubah koordinat jadi alamat (dipakai tombol "Saya"). */
+export async function reverseGeocode(
+  latitude: number,
+  longitude: number,
+): Promise<PlaceSearchResult> {
   if (env.isGoogleEnabled) {
     const url =
       "https://maps.googleapis.com/maps/api/geocode/json" +
       `?latlng=${latitude},${longitude}&language=id&key=${env.googleMapsApiKey}`;
 
     const payload = await fetchJson<{
-      status: string;
-      results?: Array<{ formatted_address: string; address_components?: Array<{ long_name: string }> }>;
+      results?: Array<{
+        formatted_address: string;
+        address_components?: Array<{ long_name: string }>;
+      }>;
     }>(url);
 
     const firstResult = payload.results?.[0];
@@ -162,8 +469,27 @@ export async function reverseGeocode(latitude: number, longitude: number): Promi
     };
   }
 
+  if (env.locationIqKey) {
+    const url =
+      `https://us1.locationiq.com/v1/reverse?key=${env.locationIqKey}` +
+      `&lat=${latitude}&lon=${longitude}&format=json&accept-language=id`;
+
+    const payload = await fetchJson<{
+      display_name?: string;
+      address?: { road?: string; suburb?: string; city?: string };
+    }>(url);
+
+    return {
+      placeId: `${latitude},${longitude}`,
+      label: payload.address?.road ?? payload.address?.suburb ?? "Lokasi saya",
+      address: payload.display_name ?? `${latitude}, ${longitude}`,
+      latitude,
+      longitude,
+    };
+  }
+
   const url = `${env.nominatimBaseUrl}/reverse?format=jsonv2&accept-language=id&lat=${latitude}&lon=${longitude}`;
-  const payload = await fetchJson<NominatimReverseResponse>(url);
+  const payload = await fetchJson<{ display_name?: string; name?: string }>(url);
 
   return {
     placeId: `${latitude},${longitude}`,

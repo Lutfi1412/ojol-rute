@@ -24,7 +24,7 @@ export function usePlaceSearch(query: string): PlaceSearchState {
 
     const trimmedQuery = debouncedQuery.trim();
 
-    if (trimmedQuery.length < 3) {
+    if (trimmedQuery.length < 2) {
       setState({ results: [], isSearching: false, errorMessage: null });
       return;
     }

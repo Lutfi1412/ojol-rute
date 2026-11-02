@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import L from "leaflet";
 import { MapContainer, Marker, Polyline, TileLayer, Tooltip, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import { env } from "@/config/env";
 import { PROVIDERS } from "@/constants/app";
 import type { GeoPoint, ProviderId, RoutePlan } from "@/types/route.types";
 import { decodePolyline } from "@/utils/polyline";
@@ -104,8 +105,8 @@ export function RouteMap({ stops, startPoint, plan, className }: RouteMapProps) 
         attributionControl
       >
         <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          url={env.mapTileUrl}
+          attribution={env.mapTileAttribution}
           maxZoom={19}
         />
 
