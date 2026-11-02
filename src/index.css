@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --color-ink: #0b1220;
+  --color-ink-soft: #475569;
+  --color-line: #e2e8f0;
+  --color-canvas: #f6f7fb;
+  --color-brand: #4f46e5;
+  --color-brand-soft: #eef2ff;
+  --color-grab: #00b14f;
+  --color-grab-soft: #e8f8ee;
+  --color-shopee: #ee4d2d;
+  --color-shopee-soft: #fdecea;
+  --color-danger: #e11d48;
+
+  --radius-card: 1rem;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: none;
+  }
+
+  button {
+    font-family: inherit;
+  }
+
+  input,
+  textarea,
+  select {
+    font-family: inherit;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .safe-bottom {
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem);
+  }
+
+  .safe-top {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Leaflet disesuaikan dengan tema aplikasi */
+.leaflet-container {
+  font-family: var(--font-sans);
+  background: #eef2f7;
+  z-index: 0;
+}
+
+.leaflet-control-attribution {
+  font-size: 10px;
+}
+
+.stop-marker {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 2px solid #ffffff;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 0.28);
+}
+
+.stop-marker--grab {
+  background: var(--color-grab);
+}
+
+.stop-marker--shopee {
+  background: var(--color-shopee);
+}
+
+.stop-marker--done {
+  background: #94a3b8;
+}
+
+.start-marker {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 2px solid #ffffff;
+  background: var(--color-brand);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 0.28);
+}
