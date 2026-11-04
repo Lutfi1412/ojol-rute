@@ -1,4 +1,4 @@
-import { Check, ExternalLink, Navigation } from "lucide-react";
+import { Check, ExternalLink, LocateFixed, Navigation } from "lucide-react";
 import { PROVIDERS } from "@/constants/app";
 import type { GeoPoint, RoutePlan } from "@/types/route.types";
 import { formatDistance, formatDuration } from "@/utils/formatMeasurement";
@@ -47,9 +47,23 @@ function buildGoogleMapsUrl(plan: RoutePlan, startPoint: GeoPoint | null): strin
 /** Urutan kunjungan hasil optimizer, lengkap dengan jarak tiap etape. */
 export function PlanTimeline({ plan, startPoint, isSaving, onToggleStop }: PlanTimelineProps) {
   const mapsUrl = buildGoogleMapsUrl(plan, startPoint);
+  const firstStep = plan.steps[0];
 
   return (
     <div>
+      {startPoint && firstStep ? (
+        <div className="mb-3 flex items-center gap-2 rounded-xl bg-brand/5 px-3 py-2">
+          <LocateFixed className="size-4 shrink-0 text-brand" />
+          <p className="min-w-0 flex-1 truncate text-[11.5px] text-ink-soft">
+            <span className="font-bold text-ink">{startPoint.label}</span> ke titik 1 ·{" "}
+            <span className="tabular-nums font-semibold text-brand">
+              {formatDistance(firstStep.legDistanceMeters)}
+            </span>{" "}
+            · {formatDuration(firstStep.legDurationSeconds)}
+          </p>
+        </div>
+      ) : null}
+
       <ol className="relative">
         {plan.steps.map((step, index) => {
           const providerMeta = PROVIDERS[step.provider];

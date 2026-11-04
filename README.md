@@ -510,7 +510,19 @@ Respons `200`:
 
 ### 7.6 `GET /routes/:routeId/plan`
 
-Menghitung ulang rencana rute. Tidak ada payload. Respons `200` dengan `data` = `RoutePlan` (contoh 6.2).
+Menghitung ulang rencana rute. Secara default dipanggil dengan dua opsi dari layar rute:
+
+```ts
+routesApi.plan(routeId, {
+  origin: { label: "Lokasi saya", address: "-6.17539, 106.82715", latitude: -6.175392, longitude: 106.827153 },
+  skipCompletedStops: true,
+});
+```
+
+- `origin` — titik 0 pengganti (posisi GPS driver). Kalau kosong, dipakai `route.startPoint`.
+- `skipCompletedStops` — titik yang sudah dicentang tidak dihitung lagi, rencana lanjut dari titik berikutnya.
+
+Respons `200` dengan `data` = `RoutePlan` (contoh 6.2).
 
 Bisa gagal `422` kalau rute belum punya titik (`"Rute belum punya titik..."`) atau `504` kalau layanan
 rute tidak merespons.
@@ -710,7 +722,12 @@ Detail teknis:
 
 ## 11. Cara sistem menghitung rekomendasi
 
-1. Semua stop dari semua grup diberi index pada matriks jarak (opsional +1 untuk titik mulai).
+0. **Titik 0 = posisi driver sekarang.** Layar rute membaca GPS (`useDriverLocation`), lalu mengirim
+   koordinat itu sebagai `origin`. Urutan jatuh ke titik awal rute yang tersimpan kalau GPS belum
+   terbaca, dan ke stop pertama kalau keduanya kosong. Posisi dibaca ulang saat halaman dibuka, saat
+   tab kembali aktif, dan lewat tombol **Perbarui**; setiap bacaan baru memicu hitung ulang.
+   Titik yang sudah selesai dilewati, jadi etape pertama selalu "saya → order berikutnya".
+1. Semua stop dari semua grup (plus titik 0 kalau ada) diberi index pada matriks jarak.
 2. Optimizer (`features/routes/planning/optimizeRoute.ts`) melakukan **dynamic programming** atas
    state "sudah mengambil berapa stop dari tiap grup" + "grup terakhir yang dikunjungi".
    Hanya stop berikutnya dari suatu grup yang boleh diambil — jadi urutan di dalam grup dijamin tetap.
@@ -788,11 +805,13 @@ Yang diuji (`src/tests/`):
 
 - `optimizeRoute.test.ts` — penyelang-seling lebih dekat, urutan dalam grup tidak berubah, tidak lebih buruk
   dari per-provider, titik awal dihormati, 1 grup, 3 grup tanpa duplikat/hilang.
+- `planOrigin.test.ts` — titik 0 memakai GPS, jatuh ke titik awal rute, lalu ke stop pertama,
+  deteksi posisi kedaluwarsa.
 - `routes.repository.test.ts` — create + sequence, validasi payload, sisip titik di tengah, reorder,
   tolak anggota asing, status otomatis dari progres, tolak hapus stop/grup terakhir, tambah grup, rename,
   delete, 404.
 
-Terakhir dijalankan: **18 test lulus**, `tsc --noEmit` bersih, `vite build` sukses.
+Terakhir dijalankan: **42 test lulus**, `tsc --noEmit` bersih, `vite build` sukses.
 
 ---
 

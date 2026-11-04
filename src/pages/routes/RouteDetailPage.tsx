@@ -22,8 +22,11 @@ import { RouteMap, type MapStop } from "@/components/common/RouteMap";
 import { RouteSummary } from "@/components/common/RouteSummary";
 import { PlanTimeline } from "@/components/common/PlanTimeline";
 import { GroupEditor } from "@/components/routes/GroupEditor";
+import { DriverLocationCard } from "@/components/routes/DriverLocationCard";
 import { AddGroupPanel } from "@/components/routes/AddGroupPanel";
 import { MAX_GROUPS_PER_ROUTE } from "@/constants/app";
+import { resolvePlanOrigin } from "@/features/routes/location/planOrigin";
+import { useDriverLocation } from "@/hooks/useDriverLocation";
 import { isApiError } from "@/services/api/apiError";
 import { useRoutesStore } from "@/stores/routes.store";
 
@@ -50,6 +53,19 @@ export function RouteDetailPage() {
   const toggleStopComplete = useRoutesStore((state) => state.toggleStopComplete);
   const reorderStops = useRoutesStore((state) => state.reorderStops);
 
+  const {
+    driverFix,
+    isLocating: isLocatingDriver,
+    errorMessage: driverLocationError,
+    refreshDriverLocation,
+  } = useDriverLocation();
+
+  // Titik 0 rencana rute: posisi driver sekarang, lalu titik awal rute, lalu stop pertama.
+  const planOrigin = useMemo(
+    () => resolvePlanOrigin(currentRoute?.startPoint ?? null, driverFix),
+    [currentRoute?.startPoint, driverFix],
+  );
+
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
@@ -65,16 +81,40 @@ export function RouteDetailPage() {
     };
   }, [routeId, loadRoute, clearCurrentRoute]);
 
-  const planKey = currentRoute ? `${currentRoute.id}:${currentRoute.updatedAt}` : null;
+  const planKey = currentRoute
+    ? [
+        currentRoute.id,
+        currentRoute.updatedAt,
+        // Posisi ikut jadi kunci: tiap GPS dibaca ulang, rute dihitung ulang dari titik itu.
+        planOrigin.point
+          ? `${planOrigin.point.latitude.toFixed(5)},${planOrigin.point.longitude.toFixed(5)}`
+          : "tanpa-titik-awal",
+        driverFix?.capturedAt ?? "tanpa-gps",
+      ].join(":")
+    : null;
 
   useEffect(() => {
     if (!currentRoute || currentRoute.id !== routeId) return;
     if (currentRoute.groups.every((group) => group.stops.length === 0)) return;
+    // Tunggu pembacaan GPS pertama supaya rute tidak dihitung dua kali.
+    if (isLocatingDriver && !driverFix) return;
     if (lastPlannedKey.current === planKey) return;
 
     lastPlannedKey.current = planKey;
-    void loadPlan(routeId);
-  }, [currentRoute, routeId, planKey, loadPlan]);
+    void loadPlan(routeId, {
+      origin: planOrigin.point,
+      skipCompletedStops: planOrigin.source === "driver",
+    });
+  }, [
+    currentRoute,
+    routeId,
+    planKey,
+    loadPlan,
+    planOrigin.point,
+    planOrigin.source,
+    isLocatingDriver,
+    driverFix,
+  ]);
 
   const allStops = useMemo(
     () => (currentRoute ? currentRoute.groups.flatMap((group) => group.stops) : []),
@@ -125,6 +165,23 @@ export function RouteDetailPage() {
       if (successMessage) toast.success(successMessage);
     } catch (error) {
       toast.error(isApiError(error) ? error.message : "Gagal menyimpan perubahan");
+    }
+  };
+
+  const handleRefreshLocation = async () => {
+    const fix = await refreshDriverLocation();
+
+    if (fix) {
+      toast.success("Lokasi diperbarui, rute dihitung ulang");
+      return;
+    }
+
+    toast.warning("Lokasi belum terbaca");
+
+    // Belum pernah dapat posisi sama sekali: pakai titik awal rute yang tersimpan.
+    // Kalau posisi lama masih ada, rencana yang berjalan dibiarkan apa adanya.
+    if (!driverFix) {
+      void loadPlan(routeId, { origin: planOrigin.point });
     }
   };
 
@@ -221,7 +278,24 @@ export function RouteDetailPage() {
         </span>
       </div>
 
-      <RouteMap stops={mapStops} startPoint={currentRoute.startPoint} plan={plan} />
+      <DriverLocationCard
+        driverFix={driverFix}
+        isLocating={isLocatingDriver}
+        errorMessage={driverLocationError}
+        origin={planOrigin.point}
+        distanceToFirstStopMeters={plan?.steps[0]?.legDistanceMeters ?? null}
+        skippedCompletedStops={
+          planOrigin.source === "driver" && plan
+            ? Math.max(
+                completedStops - plan.steps.filter((step) => step.completedAt !== null).length,
+                0,
+              )
+            : 0
+        }
+        onRefresh={() => void handleRefreshLocation()}
+      />
+
+      <RouteMap stops={mapStops} startPoint={planOrigin.point} plan={plan} />
 
       <RouteSummary
         plan={plan}
@@ -238,9 +312,9 @@ export function RouteDetailPage() {
             action={
               <button
                 type="button"
-                onClick={() => void loadPlan(routeId)}
-                disabled={isPlanning}
-                aria-label="Hitung ulang rute"
+                onClick={() => void handleRefreshLocation()}
+                disabled={isPlanning || isLocatingDriver}
+                aria-label="Baca ulang lokasi lalu hitung rute"
                 className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-50 hover:text-ink disabled:opacity-50"
               >
                 {isPlanning ? (
@@ -255,7 +329,7 @@ export function RouteDetailPage() {
           {plan && plan.steps.length > 0 ? (
             <PlanTimeline
               plan={plan}
-              startPoint={currentRoute.startPoint}
+              startPoint={planOrigin.point}
               isSaving={isSaving}
               onToggleStop={(groupId, stopId) =>
                 void runAction(() => toggleStopComplete(routeId, groupId, stopId))
@@ -265,6 +339,11 @@ export function RouteDetailPage() {
             <div className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-6 text-[13px] text-ink-soft">
               <Loader2 className="size-4 animate-spin" />
               Menghitung rute terbaik…
+            </div>
+          ) : isLocatingDriver && !driverFix ? (
+            <div className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-6 text-[13px] text-ink-soft">
+              <Loader2 className="size-4 animate-spin" />
+              Membaca lokasi Anda dulu, lalu rute dihitung dari titik itu…
             </div>
           ) : (
             <p className="rounded-xl bg-amber-50 px-3 py-3 text-[12.5px] leading-relaxed text-amber-800">

@@ -29,15 +29,60 @@ function buildDistanceLookup(distances: number[][], durations: number[][]): Dist
   };
 }
 
+export interface BuildRoutePlanOptions {
+  /**
+   * Titik 0 pengganti, biasanya posisi driver saat ini. Kalau diisi, rencana
+   * dihitung dari titik ini dan bukan dari `route.startPoint` yang tersimpan.
+   */
+  origin?: GeoPoint | null;
+  /** Lewati titik yang sudah ditandai selesai (dipakai saat rute berjalan). */
+  skipCompletedStops?: boolean;
+}
+
 /**
  * Susun rencana rute lengkap: matriks jarak -> urutan selang-seling terbaik ->
  * polyline + total jarak/waktu, plus pembanding "kalau per provider".
  */
-export async function buildRoutePlan(route: RouteRecord): Promise<RoutePlan> {
+export async function buildRoutePlan(
+  route: RouteRecord,
+  options: BuildRoutePlanOptions = {},
+): Promise<RoutePlan> {
   const notes: string[] = [];
 
-  const groupsWithStops = route.groups.filter((group) => group.stops.length > 0);
+  const origin = options.origin ?? route.startPoint;
+
+  const allGroupsWithStops = route.groups.filter((group) => group.stops.length > 0);
+  const totalStopsInRoute = allGroupsWithStops.reduce(
+    (total, group) => total + group.stops.length,
+    0,
+  );
+
+  const hasPendingStops = allGroupsWithStops.some((group) =>
+    group.stops.some((stop) => stop.completedAt === null),
+  );
+  const shouldSkipCompleted = options.skipCompletedStops === true && hasPendingStops;
+
+  const groupsWithStops = shouldSkipCompleted
+    ? allGroupsWithStops
+        .map((group) => ({
+          ...group,
+          stops: group.stops.filter((stop) => stop.completedAt === null),
+        }))
+        .filter((group) => group.stops.length > 0)
+    : allGroupsWithStops;
+
   const totalStops = groupsWithStops.reduce((total, group) => total + group.stops.length, 0);
+  const skippedCompletedStops = totalStopsInRoute - totalStops;
+
+  if (skippedCompletedStops > 0) {
+    notes.push(
+      `${skippedCompletedStops} titik yang sudah selesai tidak dihitung lagi; rencana dimulai dari titik berikutnya.`,
+    );
+  }
+
+  if (options.skipCompletedStops === true && !hasPendingStops && totalStopsInRoute > 0) {
+    notes.push("Semua titik sudah ditandai selesai. Rencana ditampilkan lengkap sebagai arsip.");
+  }
 
   if (totalStops === 0) {
     throw new RoutingError("Rute belum punya titik. Tambahkan minimal satu titik dulu.");
@@ -54,7 +99,7 @@ export async function buildRoutePlan(route: RouteRecord): Promise<RoutePlan> {
   );
 
   const points: GeoPoint[] = [
-    ...(route.startPoint ? [route.startPoint] : []),
+    ...(origin ? [origin] : []),
     ...orderedStops.map((entry) => ({
       label: entry.stop.label,
       address: entry.stop.address,
@@ -63,7 +108,7 @@ export async function buildRoutePlan(route: RouteRecord): Promise<RoutePlan> {
     })),
   ];
 
-  const pointOffset = route.startPoint ? 1 : 0;
+  const pointOffset = origin ? 1 : 0;
 
   const nodeIndexByStopId: Record<string, number> = {};
   orderedStops.forEach((entry, index) => {
@@ -82,7 +127,7 @@ export async function buildRoutePlan(route: RouteRecord): Promise<RoutePlan> {
       totalDurationSeconds: 0,
       polyline: encodePolyline(points),
       bounds: computeBounds(points),
-      startPoint: route.startPoint,
+      startPoint: origin,
       steps: singleStop
         ? [
             {
@@ -145,7 +190,7 @@ export async function buildRoutePlan(route: RouteRecord): Promise<RoutePlan> {
   const optimizeInput = {
     groups: plannerGroups,
     nodeIndexByStopId,
-    startNodeIndex: route.startPoint ? 0 : null,
+    startNodeIndex: origin ? 0 : null,
   };
 
   const optimized = optimizeInterleaving(optimizeInput, distanceLookup);
@@ -161,7 +206,7 @@ export async function buildRoutePlan(route: RouteRecord): Promise<RoutePlan> {
   );
 
   const orderedPointsForDirections: GeoPoint[] = [
-    ...(route.startPoint ? [route.startPoint] : []),
+    ...(origin ? [origin] : []),
     ...optimized.visits.map((visit) => {
       const stopEntry = orderedStops.find((entry) => entry.stop.id === visit.stopId);
       return {
@@ -188,7 +233,7 @@ export async function buildRoutePlan(route: RouteRecord): Promise<RoutePlan> {
   const legs = directions?.legs ?? [];
   const steps: RoutePlanStep[] = optimized.visits.map((visit, index) => {
     const stopEntry = orderedStops.find((entry) => entry.stop.id === visit.stopId);
-    const legIndex = route.startPoint ? index : index - 1;
+    const legIndex = origin ? index : index - 1;
     const leg = legIndex >= 0 ? legs[legIndex] : undefined;
 
     return {
@@ -246,7 +291,7 @@ export async function buildRoutePlan(route: RouteRecord): Promise<RoutePlan> {
     totalDurationSeconds,
     polyline,
     bounds,
-    startPoint: route.startPoint,
+    startPoint: origin,
     steps,
     comparison: {
       interleavedDistanceMeters: optimized.totalDistanceMeters,

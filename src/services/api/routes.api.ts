@@ -1,5 +1,6 @@
 import { API_LATENCY_MS } from "@/constants/api";
 import { buildRoutePlan } from "@/services/routing/routing.service";
+import type { BuildRoutePlanOptions } from "@/services/routing/routing.service";
 import type { ApiSuccess } from "@/types/api.types";
 import type { ProviderId, RoutePlan, RouteRecord } from "@/types/route.types";
 import type { CreateRoutePayload, UpdateRoutePayload } from "@/utils/validators";
@@ -151,9 +152,12 @@ export const routesApi = {
   },
 
   /** Endpoint khusus: hitung rencana rute (urutan selang-seling + jarak nyata). */
-  async plan(routeId: string): Promise<ApiSuccess<RoutePlan>> {
+  async plan(
+    routeId: string,
+    options?: BuildRoutePlanOptions,
+  ): Promise<ApiSuccess<RoutePlan>> {
     const route = requireRoute(routeId);
-    const plan = await buildRoutePlan(route);
+    const plan = await buildRoutePlan(route, options);
 
     return success(plan, "Rencana rute berhasil dihitung");
   },

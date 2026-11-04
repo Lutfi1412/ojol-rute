@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { ApiError } from "@/services/api/apiError";
 import { routesApi } from "@/services/api/routes.api";
+import type { BuildRoutePlanOptions } from "@/services/routing/routing.service";
 import type { ProviderId, RoutePlan, RouteRecord } from "@/types/route.types";
 import type { CreateRoutePayload, UpdateRoutePayload } from "@/utils/validators";
 
@@ -16,7 +17,7 @@ interface RoutesState {
 
   loadRoutes: () => Promise<void>;
   loadRoute: (routeId: string) => Promise<void>;
-  loadPlan: (routeId: string) => Promise<void>;
+  loadPlan: (routeId: string, options?: BuildRoutePlanOptions) => Promise<void>;
   clearCurrentRoute: () => void;
   clearError: () => void;
 
@@ -97,14 +98,14 @@ export const useRoutesStore = create<RoutesState>((set, get) => ({
     }
   },
 
-  async loadPlan(routeId) {
+  async loadPlan(routeId, options) {
     const route = get().currentRoute;
     if (!route || route.id !== routeId) return;
 
     set({ isPlanning: true, errorMessage: null });
 
     try {
-      const response = await routesApi.plan(routeId);
+      const response = await routesApi.plan(routeId, options);
       set({ plan: response.data });
     } catch (error) {
       set({ plan: null, errorMessage: toErrorMessage(error) });
